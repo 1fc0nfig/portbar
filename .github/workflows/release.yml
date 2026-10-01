@@ -1,0 +1,57 @@
+name: Release
+
+# release-please keeps a release PR open on main. Merging it tags a version, and then
+# this workflow builds the app, attaches the DMG and zip, and updates the Homebrew tap.
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      created: ${{ steps.release.outputs.release_created }}
+      tag: ${{ steps.release.outputs.tag_name }}
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - uses: googleapis/release-please-action@v4
+        id: release
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  publish:
+    needs: release-please
+    if: needs.release-please.outputs.created == 'true'
+    runs-on: macos-15
+    env:
+      VERSION: ${{ needs.release-please.outputs.version }}
+      TAG: ${{ needs.release-please.outputs.tag }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install create-dmg
+        run: brew install create-dmg
+      - name: Build universal app
+        run: scripts/build-app.sh --universal
+      - name: Package
+        run: scripts/make-dmg.sh
+      - name: Upload release assets
+        run: gh release upload "$TAG" dist/portbar-$VERSION.dmg dist/portbar-$VERSION.zip --clobber
+      - name: Update Homebrew tap
+        env:
+          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+        run: |
+          if [ -z "$TAP_TOKEN" ]; then echo "::warning::TAP_TOKEN is not set, skipping the tap"; exit 0; fi
+          git clone "https://x-access-token:$TAP_TOKEN@github.com/1fc0nfig/homebrew-tap.git" tap
+          mkdir -p tap/Casks
+          scripts/write-cask.sh "$VERSION" "$(shasum -a 256 dist/portbar-$VERSION.dmg | cut -d' ' -f1)" > tap/Casks/portbar.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Casks/portbar.rb
+          git commit -m "portbar $VERSION"
+          git push

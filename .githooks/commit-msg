@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Commit messages must follow Conventional Commits. release-please reads them to pick the
+# next version and to write the changelog.
+set -euo pipefail
+
+# Keep the global checks (for example the ANSI escape check) when they exist.
+global="$HOME/.git-hooks/commit-msg"
+[ -x "$global" ] && "$global" "$1"
+
+subject="$(head -n1 "$1")"
+pattern='^(feat|fix|perf|refactor|docs|test|build|ci|chore|style|revert)(\([a-z0-9-]+\))?!?: .+'
+if ! [[ "$subject" =~ $pattern || "$subject" =~ ^(Merge|Revert|fixup!|squash!) ]]; then
+  echo "commit-msg: use Conventional Commits, for example 'feat: show exit codes' or 'fix(ui): clip details'." >&2
+  echo "commit-msg: got '$subject'" >&2
+  exit 1
+fi

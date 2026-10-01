@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          swift build --build-tests 2>&1 | tee build.log
+          if grep -E "warning: " build.log; then echo "::error::fix the build warnings"; exit 1; fi
+      - name: Test
+        run: swift test --skip-build
+      - name: Build app
+        run: scripts/build-app.sh

@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# Runs before each commit: whitespace check, then build and unit tests when Swift code changed.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+git diff --cached --check
+
+if git diff --cached --name-only | grep -qE '\.swift$|^Package\.(swift|resolved)$'; then
+  echo "pre-commit: swift build"
+  if ! out="$(swift build --build-tests 2>&1)"; then
+    echo "$out" | grep -E "error" >&2
+    exit 1
+  fi
+  if echo "$out" | grep -E "warning: " >&2; then
+    echo "pre-commit: fix the warnings above" >&2
+    exit 1
+  fi
+  echo "pre-commit: swift test"
+  if ! out="$(swift test --skip-build 2>&1)"; then
+    echo "$out" | grep -E "error|failed" >&2
+    echo "pre-commit: tests failed" >&2
+    exit 1
+  fi
+  echo "$out" | grep -E "^\s*Executed" | tail -1
+fi
