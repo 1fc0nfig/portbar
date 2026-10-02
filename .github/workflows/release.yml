@@ -2,9 +2,15 @@ name: Release
 
 # release-please keeps a release PR open on main. Merging it tags a version, and then
 # this workflow builds the app, attaches the DMG and zip, and updates the Homebrew tap.
+# Run it by hand with a tag to publish (or republish) an existing release.
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to publish, for example portbar-v0.1.0"
+        required: true
 
 permissions:
   contents: write
@@ -12,6 +18,7 @@ permissions:
 
 jobs:
   release-please:
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     outputs:
       created: ${{ steps.release.outputs.release_created }}
@@ -25,33 +32,49 @@ jobs:
 
   publish:
     needs: release-please
-    if: needs.release-please.outputs.created == 'true'
+    if: ${{ !cancelled() && (needs.release-please.outputs.created == 'true' || github.event_name == 'workflow_dispatch') }}
     runs-on: macos-15
     env:
-      VERSION: ${{ needs.release-please.outputs.version }}
-      TAG: ${{ needs.release-please.outputs.tag }}
+      TAG: ${{ inputs.tag || needs.release-please.outputs.tag }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+          fetch-depth: 0
+      # Build the tagged sources with the current scripts, so a fixed script
+      # can republish an older tag.
+      - name: Use current release scripts
+        run: git checkout "$GITHUB_SHA" -- scripts
+      - name: Read version
+        run: echo "VERSION=${TAG#portbar-v}" >> "$GITHUB_ENV"
       - name: Install create-dmg
         run: brew install create-dmg
       - name: Build universal app
         run: scripts/build-app.sh --universal
       - name: Package
         run: scripts/make-dmg.sh
+      # portbar.dmg has a fixed name, so releases/latest/download/portbar.dmg
+      # always serves the newest build (the website links it).
       - name: Upload release assets
-        run: gh release upload "$TAG" dist/portbar-$VERSION.dmg dist/portbar-$VERSION.zip --clobber
+        run: |
+          cp "dist/portbar-$VERSION.dmg" dist/portbar.dmg
+          gh release upload "$TAG" "dist/portbar-$VERSION.dmg" "dist/portbar-$VERSION.zip" dist/portbar.dmg --clobber
       - name: Update Homebrew tap
         env:
-          TAP_TOKEN: ${{ secrets.TAP_TOKEN }}
+          TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}
         run: |
-          if [ -z "$TAP_TOKEN" ]; then echo "::warning::TAP_TOKEN is not set, skipping the tap"; exit 0; fi
-          git clone "https://x-access-token:$TAP_TOKEN@github.com/1fc0nfig/homebrew-tap.git" tap
+          if [ -z "$TAP_DEPLOY_KEY" ]; then echo "::error::TAP_DEPLOY_KEY is not set"; exit 1; fi
+          install -m 600 /dev/null "$RUNNER_TEMP/tap_key"
+          printf '%s\n' "$TAP_DEPLOY_KEY" > "$RUNNER_TEMP/tap_key"
+          export GIT_SSH_COMMAND="ssh -i $RUNNER_TEMP/tap_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+          git clone git@github.com:1fc0nfig/homebrew-tap.git tap
           mkdir -p tap/Casks
-          scripts/write-cask.sh "$VERSION" "$(shasum -a 256 dist/portbar-$VERSION.dmg | cut -d' ' -f1)" > tap/Casks/portbar.rb
+          scripts/write-cask.sh "$VERSION" "$(shasum -a 256 "dist/portbar-$VERSION.dmg" | cut -d' ' -f1)" > tap/Casks/portbar.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add Casks/portbar.rb
+          git diff --cached --quiet && { echo "cask already up to date"; exit 0; }
           git commit -m "portbar $VERSION"
           git push

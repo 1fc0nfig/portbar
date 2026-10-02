@@ -21,8 +21,14 @@ for arg in "$@"; do
 done
 
 if $UNIVERSAL; then
-  swift build -c release --arch arm64 --arch x86_64
-  BIN=.build/apple/Products/Release/portbar
+  # One build per arch, then lipo. A single multi-arch build (--arch arm64
+  # --arch x86_64) fails with "duplicate output file" on the CI runner.
+  swift build -c release --arch arm64
+  swift build -c release --arch x86_64
+  BIN=.build/portbar-universal
+  lipo -create -output "$BIN" \
+    .build/arm64-apple-macosx/release/portbar \
+    .build/x86_64-apple-macosx/release/portbar
 else
   swift build -c release
   BIN=.build/release/portbar

@@ -8,10 +8,17 @@ cask "portbar" do
   version "$VERSION"
   sha256 "$SHA"
 
-  url "https://github.com/1fc0nfig/portbar/releases/download/v#{version}/portbar-#{version}.dmg"
+  url "https://github.com/1fc0nfig/portbar/releases/download/portbar-v#{version}/portbar-#{version}.dmg"
   name "portbar"
   desc "Menu bar app that shows which dev servers run on which ports"
-  homepage "https://github.com/1fc0nfig/portbar"
+  homepage "https://portbar.app"
+
+  # release-please tags carry the component prefix: portbar-v1.2.3.
+  livecheck do
+    url :url
+    regex(/^portbar-v?(\d+(?:\.\d+)+)$/i)
+    strategy :github_latest
+  end
 
   depends_on macos: ">= :sonoma"
 
