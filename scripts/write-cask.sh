@@ -11,7 +11,7 @@ cask "portbar" do
   url "https://github.com/1fc0nfig/portbar/releases/download/portbar-v#{version}/portbar-#{version}.dmg"
   name "portbar"
   desc "Menu bar app that shows which dev servers run on which ports"
-  homepage "https://portbar.app"
+  homepage "https://portbar.app/"
 
   # release-please tags carry the component prefix: portbar-v1.2.3.
   livecheck do
