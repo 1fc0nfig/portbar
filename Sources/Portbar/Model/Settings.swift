@@ -108,6 +108,8 @@ struct Settings: Codable, Equatable {
     var panelWidth: Double = Settings.defaultWidth
     var panelMaxHeight: Double = Settings.defaultMaxHeight
     var stopScriptsOnQuit = true
+    /// Minutes after which finished scripts and stopped services leave the panel. 0 keeps them.
+    var clearFinishedAfterMinutes: Double = 60
     /// Hours after which a detached process counts as forgotten (red). 0 turns this off.
     var forgottenAfterHours: Double = 12
     /// Folders portbar scans for projects you can add to the panel.
@@ -136,6 +138,8 @@ struct Settings: Codable, Equatable {
         panelWidth = try c.decodeIfPresent(Double.self, forKey: .panelWidth) ?? d.panelWidth
         panelMaxHeight = try c.decodeIfPresent(Double.self, forKey: .panelMaxHeight) ?? d.panelMaxHeight
         stopScriptsOnQuit = try c.decodeIfPresent(Bool.self, forKey: .stopScriptsOnQuit) ?? d.stopScriptsOnQuit
+        clearFinishedAfterMinutes = try c.decodeIfPresent(Double.self, forKey: .clearFinishedAfterMinutes)
+            ?? d.clearFinishedAfterMinutes
         forgottenAfterHours = try c.decodeIfPresent(Double.self, forKey: .forgottenAfterHours) ?? d.forgottenAfterHours
         ignorePatterns = try c.decodeIfPresent([String].self, forKey: .ignorePatterns) ?? d.ignorePatterns
         projectRoots = Settings.uniqueFolders(try c.decodeIfPresent([String].self, forKey: .projectRoots) ?? d.projectRoots)

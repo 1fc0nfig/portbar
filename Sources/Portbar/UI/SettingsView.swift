@@ -60,6 +60,13 @@ private struct GeneralSettings: View {
                     Text("5 seconds").tag(5.0)
                 }
                 Toggle("Stop scripts started from portbar when it quits", isOn: $settings.value.stopScriptsOnQuit)
+                Picker("Clear finished scripts after", selection: $settings.value.clearFinishedAfterMinutes) {
+                    Text("15 minutes").tag(15.0)
+                    Text("1 hour").tag(60.0)
+                    Text("4 hours").tag(240.0)
+                    Text("1 day").tag(1440.0)
+                    Text("Never").tag(0.0)
+                }
             }
             Section {
                 Picker("Mark detached processes red after", selection: $settings.value.forgottenAfterHours) {

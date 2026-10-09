@@ -87,6 +87,7 @@ struct PanelView: View {
                         ForEach(ProjectSort.allCases) { Text($0.label).tag($0) }
                     }
                     Button("Refresh") { model.refresh(probe: true) }.keyboardShortcut("r")
+                    Button("Clear All Finished") { model.clearFinished() }.disabled(!model.hasFinished)
                     Divider()
                     Button("Quit portbar") { NSApp.terminate(nil) }.keyboardShortcut("q")
                 } label: { menuGlyph }
@@ -165,6 +166,7 @@ struct ProjectSection: View {
     let project: ProjectDisplay
     let model: AppModel
     @Binding var expandedID: String?
+    @State private var showsOlder = false
 
     private var singleWorktree: WorktreeGroup? {
         project.worktrees.count == 1 && !project.worktrees[0].isLinked ? project.worktrees[0] : nil
@@ -198,13 +200,29 @@ struct ProjectSection: View {
                         .transition(.opacity)
                 }
             }
-            ForEach(project.stopped) { entry in
-                StoppedRow(entry: entry, model: model)
-                    .transition(.opacity)
-            }
-            ForEach(project.looseRuns) { run in
+            ForEach(project.activeRuns) { run in
                 RunRow(run: run, model: model)
             }
+            // The newest finished row stays in view. Older ones fold under one line.
+            let finished = project.finished
+            if let newest = finished.first {
+                finishedRow(newest)
+            }
+            if finished.count > 1 {
+                let older = Array(finished.dropFirst())
+                OlderToggle(older: older, expanded: $showsOlder)
+                if showsOlder {
+                    ForEach(older) { finishedRow($0) }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func finishedRow(_ item: FinishedItem) -> some View {
+        switch item {
+        case .stopped(let entry): StoppedRow(entry: entry, model: model).transition(.opacity)
+        case .run(let run): RunRow(run: run, model: model).transition(.opacity)
         }
     }
 
@@ -223,6 +241,9 @@ struct ProjectSection: View {
                 BranchChip(branch: branch)
             }
             Spacer(minLength: 6)
+            if project.hasFinished, !PanelView.isRendering {
+                ClearButton { model.clearFinished(in: project.id) }
+            }
             if let path = project.path {
                 let favorites = project.pinned ? Array(model.catalog.favorites(in: path, config: project.config).prefix(2)) : []
                 if favorites.isEmpty {
@@ -251,6 +272,10 @@ struct ProjectSection: View {
         .padding(.top, 12)
         .padding(.bottom, 4)
         .contextMenu {
+            if project.hasFinished {
+                Button("Clear Finished") { model.clearFinished(in: project.id) }
+                Divider()
+            }
             if let path = project.path {
                 Button(project.pinned ? "Unpin" : "Pin to Top") { model.settings.setPinned(path, !project.pinned) }
                 if project.config?.added == true || project.pinned {
@@ -270,6 +295,63 @@ struct ProjectSection: View {
                 Button("Project Settings…") { model.showSettings(.projects, project: path) }
             }
         }
+    }
+}
+
+/// Folds the older finished rows of a project: "3 earlier · 1 failed".
+struct OlderToggle: View {
+    let older: [FinishedItem]
+    @Binding var expanded: Bool
+    @State private var hovering = false
+
+    var body: some View {
+        let failed = older.filter(\.failed).count
+        Button {
+            withAnimation(.smooth(duration: 0.25)) { expanded.toggle() }
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .bold))
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                Text("\(older.count) earlier")
+                if failed > 0 {
+                    Text("· \(failed) failed").foregroundStyle(Color(nsColor: .systemRed))
+                }
+                Spacer()
+            }
+            .font(.system(size: 11, weight: .medium))
+            .foregroundStyle(hovering ? .secondary : .tertiary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help(expanded ? "Hide earlier runs" : "Show earlier runs")
+    }
+}
+
+/// Removes the finished rows of one project.
+struct ClearButton: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Text("Clear")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(hovering ? .secondary : .tertiary)
+                .padding(.horizontal, 6)
+                .frame(height: 20)
+                .background(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color.primary.opacity(hovering ? 0.07 : 0))
+                )
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Clear stopped and finished scripts")
     }
 }
 

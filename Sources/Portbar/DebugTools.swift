@@ -149,8 +149,11 @@ enum DebugTools {
             }
         }
         if args.contains("--fake-stopped"), let s = model.snapshot.services.first(where: { $0.location != nil }) {
-            model.stopped.append(StoppedEntry(projectID: s.location!.repoRoot, kind: .tool("storybook", "Storybook", brand: "storybook"),
-                                              command: "bun run storybook", directory: s.directory, ports: [6006], run: nil))
+            // Three rows, so the older two fold under one line.
+            for _ in 0..<3 {
+                model.stopped.append(StoppedEntry(projectID: s.location!.repoRoot, kind: .tool("storybook", "Storybook", brand: "storybook"),
+                                                  command: "bun run storybook", directory: s.directory, ports: [6006], run: nil))
+            }
         }
         let expanded = args.contains("--expand") ? model.projects.flatMap(\.services).first(where: { !$0.ports.isEmpty })?.id : nil
         let view = PanelView(model: model, expandedID: expanded)

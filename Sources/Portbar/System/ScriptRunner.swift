@@ -57,6 +57,8 @@ final class ManagedRun: Identifiable {
     /// The signal that ended the process, if any.
     fileprivate(set) var signal: Int32?
     fileprivate(set) var stoppedByUser = false
+    /// When the run ended. Finished runs leave the panel some time after this.
+    fileprivate(set) var ended: Date?
     /// Started by an earlier portbar. When it ends, its exit status is unknown.
     fileprivate(set) var adopted = false
     @ObservationIgnored fileprivate var tail: LogTail?
@@ -256,6 +258,7 @@ final class ScriptRunner {
         } catch {
             run.log.appendNote("Could not start: \(error.localizedDescription)")
             run.exitCode = -1
+            run.ended = Date()
         }
         if fd >= 0 { try? output.close() }
         runs.append(run)
@@ -304,6 +307,7 @@ final class ScriptRunner {
         run.exitWatch = nil
         run.log.flush()
         setExit()
+        run.ended = Date()
         run.log.appendNote(run.exit.map { "[\($0.long)]" } ?? "[ended]")
     }
 

@@ -23,6 +23,40 @@ struct ProjectDisplay: Identifiable {
     var isRunning: Bool { !services.isEmpty || looseRuns.contains { $0.isRunning } }
     var hasIssue: Bool { services.contains { !$0.issues.isEmpty } || looseRuns.contains { $0.failed } }
     var hasSevereIssue: Bool { services.contains { $0.issues.contains(where: \.isSevere) } || looseRuns.contains { $0.failed } }
+    var activeRuns: [ManagedRun] { looseRuns.filter(\.isRunning) }
+    /// Stopped services and ended runs, newest first.
+    var finished: [FinishedItem] {
+        (stopped.map(FinishedItem.stopped) + looseRuns.filter { !$0.isRunning }.map(FinishedItem.run))
+            .sorted { $0.date > $1.date }
+    }
+    var hasFinished: Bool { !stopped.isEmpty || looseRuns.contains { !$0.isRunning } }
+}
+
+/// A row for something that no longer runs: a stopped service or an ended script run.
+enum FinishedItem: Identifiable {
+    case stopped(StoppedEntry)
+    case run(ManagedRun)
+
+    var id: UUID {
+        switch self {
+        case .stopped(let entry): entry.id
+        case .run(let run): run.id
+        }
+    }
+
+    @MainActor var date: Date {
+        switch self {
+        case .stopped(let entry): entry.stoppedAt
+        case .run(let run): run.ended ?? run.started
+        }
+    }
+
+    @MainActor var failed: Bool {
+        switch self {
+        case .stopped(let entry): entry.run?.failed ?? false
+        case .run(let run): run.failed
+        }
+    }
 }
 
 /// A service you stopped from portbar. It keeps its row, so you can run it again.
@@ -183,7 +217,8 @@ final class AppModel {
                 result.append(d)
             }
         }
-        return result
+        // Processes outside repos go last, also when only a stopped row or a run brought them in.
+        return result.filter { !$0.isOther } + result.filter(\.isOther)
     }
 
     func run(for service: Service) -> ManagedRun? {
@@ -195,6 +230,8 @@ final class AppModel {
         guard run.isRunning else { return nil }
         return snapshot.services.first { !$0.exiting && self.run(for: $0) === run }
     }
+
+    var hasFinished: Bool { !stopped.isEmpty || runner.runs.contains { !$0.isRunning } }
 
     var visibleServiceCount: Int { projects.reduce(0) { $0 + $1.services.count } }
     var hasSevereIssue: Bool { projects.contains(where: \.hasSevereIssue) }
@@ -323,6 +360,7 @@ final class AppModel {
         memoryHistory = memory
 
         settings.remember(snap.projects.compactMap(\.path))
+        clearOldFinished(now: now)
         reschedule()
     }
 
@@ -397,6 +435,34 @@ final class AppModel {
     func dismiss(_ entry: StoppedEntry) {
         withAnimation(.smooth(duration: 0.3)) { stopped.removeAll { $0.id == entry.id } }
         if let run = entry.run, !run.isRunning { runner.dismiss(run) }
+    }
+
+    /// Removes stopped services and ended runs. With no project, from every project.
+    func clearFinished(in projectID: String? = nil) {
+        let entries = stopped.filter { projectID == nil || $0.projectID == projectID }
+        let ids = Set(entries.map(\.id))
+        let runs = runner.runs.filter { run in
+            !run.isRunning && (projectID == nil || run.projectID == projectID || entries.contains { $0.run === run })
+        }
+        withAnimation(.smooth(duration: 0.3)) {
+            stopped.removeAll { ids.contains($0.id) }
+            for run in runs { runner.dismiss(run) }
+        }
+    }
+
+    /// Removes stopped services and ended runs older than the limit in Settings.
+    private func clearOldFinished(now: Date) {
+        let minutes = settings.value.clearFinishedAfterMinutes
+        guard minutes > 0 else { return }
+        let cutoff = now.addingTimeInterval(-minutes * 60)
+        if stopped.contains(where: { $0.stoppedAt < cutoff }) {
+            stopped.removeAll { $0.stoppedAt < cutoff }
+        }
+        // A run stays while a newer stopped row still points at it, for its logs.
+        let kept = Set(stopped.compactMap { $0.run?.id })
+        for run in runner.runs where !run.isRunning && !kept.contains(run.id) && (run.ended ?? now) < cutoff {
+            runner.dismiss(run)
+        }
     }
 
     /// Stops the service and starts it again inside portbar, so its logs show up here.
