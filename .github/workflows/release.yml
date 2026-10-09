@@ -54,12 +54,25 @@ jobs:
         run: scripts/build-app.sh --universal
       - name: Package
         run: scripts/make-dmg.sh
+      # Sparkle in the app reads releases/latest/download/appcast.xml and installs the signed zip.
+      - name: Write appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+        run: |
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then echo "::error::SPARKLE_PRIVATE_KEY is not set"; exit 1; fi
+          install -m 600 /dev/null "$RUNNER_TEMP/sparkle_key"
+          printf '%s\n' "$SPARKLE_PRIVATE_KEY" > "$RUNNER_TEMP/sparkle_key"
+          gh release view "$TAG" --json body -q .body > "$RUNNER_TEMP/notes.md"
+          SPARKLE_KEY_FILE="$RUNNER_TEMP/sparkle_key" \
+            scripts/write-appcast.sh "$VERSION" "dist/portbar-$VERSION.zip" "$RUNNER_TEMP/notes.md" > dist/appcast.xml
+          rm -f "$RUNNER_TEMP/sparkle_key"
       # portbar.dmg has a fixed name, so releases/latest/download/portbar.dmg
       # always serves the newest build (the website links it).
       - name: Upload release assets
         run: |
           cp "dist/portbar-$VERSION.dmg" dist/portbar.dmg
-          gh release upload "$TAG" "dist/portbar-$VERSION.dmg" "dist/portbar-$VERSION.zip" dist/portbar.dmg --clobber
+          gh release upload "$TAG" "dist/portbar-$VERSION.dmg" "dist/portbar-$VERSION.zip" dist/portbar.dmg \
+            dist/appcast.xml --clobber
       - name: Update Homebrew tap
         env:
           TAP_DEPLOY_KEY: ${{ secrets.TAP_DEPLOY_KEY }}

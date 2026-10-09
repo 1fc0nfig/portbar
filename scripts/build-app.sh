@@ -36,8 +36,13 @@ fi
 
 APP=build/portbar.app
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Frameworks"
 cp "$BIN" "$APP/Contents/MacOS/portbar"
+# Sparkle ships as a universal framework. Keep its own signature, and let the app find it.
+SPARKLE="$(find .build -path '*/release/Sparkle.framework' -maxdepth 4 | head -n1)"
+[ -n "$SPARKLE" ] || { echo "missing Sparkle.framework in .build" >&2; exit 1; }
+ditto "$SPARKLE" "$APP/Contents/Frameworks/Sparkle.framework"
+install_name_tool -add_rpath @executable_path/../Frameworks "$APP/Contents/MacOS/portbar"
 cp Resources/Info.plist "$APP/Contents/Info.plist"
 cp assets/brand/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"

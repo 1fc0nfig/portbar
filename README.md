@@ -35,6 +35,8 @@ Or download the DMG from [Releases](https://github.com/1fc0nfig/portbar/releases
 
 portbar needs macOS 14 or later. The app has an ad-hoc signature, not a Developer ID. The Homebrew cask removes the quarantine flag for you. If you install from the DMG, right-click the app and select Open the first time.
 
+portbar updates itself with [Sparkle](https://sparkle-project.org). It checks for a new release once a day, downloads it, and installs it when portbar quits. Click the arrow in the panel header to restart and update at once. You can turn this off in Settings › General › Updates.
+
 ## Development
 
 You need Xcode 16 or the Swift 6 toolchain.
@@ -60,9 +62,15 @@ CI runs the same build and tests on each pull request and on each push to `main`
 2. release-please opens a release pull request. It bumps `version.txt` and updates `CHANGELOG.md`.
 3. Merge the release pull request. release-please tags the version and creates the GitHub release.
 4. The Release workflow builds a universal app and attaches the DMG and the zip to the release.
-5. The workflow writes `Casks/portbar.rb` in [1fc0nfig/homebrew-tap](https://github.com/1fc0nfig/homebrew-tap).
+5. The workflow signs the zip and attaches `appcast.xml`, the feed that Sparkle reads.
+6. The workflow writes `Casks/portbar.rb` in [1fc0nfig/homebrew-tap](https://github.com/1fc0nfig/homebrew-tap).
 
-The tap step needs a `TAP_TOKEN` secret: a fine-grained token with write access to the tap repository. Without the secret, the workflow skips the tap and shows a warning.
+The workflow needs two secrets:
+
+- `SPARKLE_PRIVATE_KEY`: the EdDSA key that signs updates. The login Keychain keeps a copy under the account `portbar`. Export it with `generate_keys --account portbar -x <file>`. The public key is `SUPublicEDKey` in `Resources/Info.plist`.
+- `TAP_DEPLOY_KEY`: an SSH deploy key with write access to the tap repository.
+
+If a secret is missing, the workflow stops with an error.
 
 ## Debug
 

@@ -97,6 +97,7 @@ final class AppModel {
     let settings = SettingsStore()
     let runner = ScriptRunner()
     let catalog = ProjectCatalog()
+    let updater = Updater()
 
     private(set) var snapshot = Snapshot()
     /// Services the user just stopped, by id. Hidden while they shut down.

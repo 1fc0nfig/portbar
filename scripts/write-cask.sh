@@ -20,6 +20,8 @@ cask "portbar" do
     strategy :github_latest
   end
 
+  # portbar updates itself with Sparkle.
+  auto_updates true
   depends_on macos: :sonoma
 
   app "portbar.app"

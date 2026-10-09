@@ -64,6 +64,17 @@ struct PanelView: View {
             Text(summary(projects))
                 .font(.system(size: 11).monospacedDigit())
                 .foregroundStyle(.secondary)
+            if let version = model.updater.readyVersion, !Self.isRendering {
+                Button { model.updater.installNow() } label: {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("portbar \(version) is ready. Click to restart and update.")
+            }
             if !Self.isRendering {
                 Button { addingProject.toggle() } label: {
                     Image(systemName: "plus")
@@ -88,6 +99,14 @@ struct PanelView: View {
                     }
                     Button("Refresh") { model.refresh(probe: true) }.keyboardShortcut("r")
                     Button("Clear All Finished") { model.clearFinished() }.disabled(!model.hasFinished)
+                    if model.updater.isAvailable {
+                        Divider()
+                        if let version = model.updater.readyVersion {
+                            Button("Restart to Update to \(version)") { model.updater.installNow() }
+                        } else {
+                            Button("Check for Updates…") { model.updater.checkNow() }
+                        }
+                    }
                     Divider()
                     Button("Quit portbar") { NSApp.terminate(nil) }.keyboardShortcut("q")
                 } label: { menuGlyph }

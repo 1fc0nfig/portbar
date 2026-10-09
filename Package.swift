@@ -7,9 +7,13 @@ let package = Package(
     products: [
         .executable(name: "portbar", targets: ["Portbar"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/sparkle-project/Sparkle", from: "2.6.0"),
+    ],
     targets: [
         .executableTarget(
             name: "Portbar",
+            dependencies: [.product(name: "Sparkle", package: "Sparkle")],
             path: "Sources/Portbar",
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),

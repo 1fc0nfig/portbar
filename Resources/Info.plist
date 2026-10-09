@@ -13,5 +13,9 @@
     <key>LSUIElement</key><true/>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>SUFeedURL</key><string>https://github.com/1fc0nfig/portbar/releases/latest/download/appcast.xml</string>
+    <key>SUPublicEDKey</key><string>BwV/bIl4LptIMGN3NcpmvkqvkQ1NVUZYFS0T2vGVIPA=</string>
+    <key>SUEnableAutomaticChecks</key><true/>
+    <key>SUAutomaticallyUpdate</key><true/>
 </dict>
 </plist>

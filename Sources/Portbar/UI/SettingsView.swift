@@ -26,6 +26,27 @@ struct SettingsView: View {
 
 // MARK: - General
 
+private struct UpdateSettings: View {
+    @Bindable var updater: Updater
+
+    var body: some View {
+        Section {
+            Toggle("Check for updates automatically", isOn: $updater.checksAutomatically)
+            Toggle("Download and install updates automatically", isOn: $updater.installsAutomatically)
+                .disabled(!updater.checksAutomatically)
+            LabeledContent("Version \(updater.currentVersion)") {
+                if let version = updater.readyVersion {
+                    Button("Restart to Update to \(version)") { updater.installNow() }
+                } else {
+                    Button("Check Now") { updater.checkNow() }
+                }
+            }
+        } header: {
+            Text("Updates")
+        }
+    }
+}
+
 private struct GeneralSettings: View {
     @Bindable var settings: SettingsStore
     let model: AppModel
@@ -67,6 +88,9 @@ private struct GeneralSettings: View {
                     Text("1 day").tag(1440.0)
                     Text("Never").tag(0.0)
                 }
+            }
+            if model.updater.isAvailable {
+                UpdateSettings(updater: model.updater)
             }
             Section {
                 Picker("Mark detached processes red after", selection: $settings.value.forgottenAfterHours) {
