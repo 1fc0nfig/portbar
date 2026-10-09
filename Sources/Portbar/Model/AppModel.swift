@@ -190,6 +190,12 @@ final class AppModel {
         runner.runs.first { $0.isRunning && ($0.pid == service.root.pid || service.ancestorPids.contains($0.pid)) }
     }
 
+    /// The live service a run started, if it is up.
+    func service(for run: ManagedRun) -> Service? {
+        guard run.isRunning else { return nil }
+        return snapshot.services.first { !$0.exiting && self.run(for: $0) === run }
+    }
+
     var visibleServiceCount: Int { projects.reduce(0) { $0 + $1.services.count } }
     var hasSevereIssue: Bool { projects.contains(where: \.hasSevereIssue) }
     var issueCount: Int { projects.flatMap(\.services).filter { !$0.issues.isEmpty }.count }

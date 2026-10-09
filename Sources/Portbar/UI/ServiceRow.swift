@@ -173,7 +173,6 @@ struct ServiceRow: View {
 struct ServiceDetails: View {
     let service: Service
     let model: AppModel
-    @Environment(\.openWindow) private var openWindow
     @State private var showFullCommand = false
 
     var body: some View {
@@ -188,7 +187,7 @@ struct ServiceDetails: View {
                 }
             }
 
-            stats
+            ServiceStats(service: service, model: model)
 
             Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 4) {
                 if let dir = service.directory {
@@ -197,7 +196,7 @@ struct ServiceDetails: View {
                 if let run {
                     detail("Script", "\(run.command)  (started from portbar)")
                 } else if service.fromEarlierSession, let launcher = service.launcherCommand {
-                    detail("Script", "\(launcher)  (started from portbar earlier, logs not available)")
+                    detail("Script", launcher)
                 } else if let launcher = service.launcherCommand {
                     detail("Started by", launcher)
                 }
@@ -207,7 +206,11 @@ struct ServiceDetails: View {
                        : "\(service.root.pid)")
             }
 
-            actions(run)
+            if run == nil, service.fromEarlierSession {
+                noLogs
+            }
+
+            ServiceActions(service: service, model: model, run: run)
         }
         .padding(.leading, 44)
         .padding(.trailing, 10)
@@ -215,66 +218,22 @@ struct ServiceDetails: View {
         .padding(.top, 2)
     }
 
-    private var stats: some View {
-        HStack(spacing: 6) {
-            let cpu = model.cpuHistory[service.id] ?? []
-            let memory = model.memoryHistory[service.id] ?? []
-            StatTile(label: "CPU", value: "\(Int(service.cpuPercent.rounded()))%",
-                     alert: service.issues.contains(.busy)) {
-                Sparkline(samples: cpu, alert: service.issues.contains(.busy), width: 64, height: 20, track: false)
-            }
-            StatTile(label: "Memory", value: Format.bytes(service.memoryBytes)) {
-                Sparkline(samples: memory, width: 64, height: 20, relative: true, track: false,
-                          help: "Memory, last \(memory.count) samples")
-            }
-            StatTile(label: "Uptime", value: Format.uptime(since: service.startTime)) { EmptyView() }
-                .fixedSize()
-                .help(service.startTime.formatted(date: .abbreviated, time: .standard))
-            StatTile(label: "Procs", value: "\(service.members.count)") { EmptyView() }
-                .fixedSize()
-        }
-    }
-
-    /// Icon buttons with tooltips. Open is the one accent button, Stop the one red button.
-    private func actions(_ run: ManagedRun?) -> some View {
-        HStack(spacing: 4) {
-            if let port = service.ports.first {
-                Button { ProcessControl.open(service) } label: { ActionIcon(systemName: "arrow.up.right.square") }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.accentColor)
-                    .help("Open http://localhost:\(port)")
-                Button { ProcessControl.copy("http://localhost:\(port)") } label: { ActionIcon(systemName: "link") }
-                    .help("Copy http://localhost:\(port)")
-            }
-            if let run {
-                Button {
-                    openWindow(id: "logs", value: run.id)
-                    NSApp.activate(ignoringOtherApps: true)
-                } label: { ActionIcon(systemName: "text.alignleft") }
-                .help("Show logs")
-            }
-            if service.rerun != nil || run != nil {
-                Button { model.restart(service) } label: { ActionIcon(systemName: "arrow.clockwise") }
-                    .help(run == nil ? "Restart inside portbar, with logs" : "Restart")
-            }
-            if let dir = service.location?.worktreeRoot ?? service.directory {
-                Button { ProcessControl.revealInFinder(dir) } label: { ActionIcon(systemName: "folder") }
-                    .help("Show in Finder")
-                if let editor = ProcessControl.editor {
-                    Button { ProcessControl.openInEditor(dir) } label: {
-                        Image(nsImage: ProcessControl.editorIcon ?? NSImage())
-                            .resizable()
-                            .frame(width: 14, height: 14)
-                            .frame(width: 18, height: 16)
-                    }
-                    .help("Open in \(editor.name)")
-                }
-            }
+    /// An earlier portbar started this and its log is gone. A restart brings the logs back.
+    private var noLogs: some View {
+        HStack(spacing: 8) {
+            Text("Started by an earlier portbar. Its logs are not available.")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
             Spacer(minLength: 4)
-            StopButton(service: service, model: model, run: run)
+            if service.rerun != nil {
+                Button("Restart with Logs") { model.restart(service) }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+            }
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
     }
 
     @ViewBuilder
@@ -312,6 +271,95 @@ struct ServiceDetails: View {
                 .help(showFullCommand ? "Click to collapse" : "Click to show the full command")
                 .contextMenu { Button("Copy Command") { ProcessControl.copy(command) } }
         }
+    }
+}
+
+/// CPU, memory, uptime, and process count. The panel details and the log window show it.
+struct ServiceStats: View {
+    let service: Service
+    let model: AppModel
+
+    var body: some View {
+        HStack(spacing: 6) {
+            let cpu = model.cpuHistory[service.id] ?? []
+            let memory = model.memoryHistory[service.id] ?? []
+            StatTile(label: "CPU", value: "\(Int(service.cpuPercent.rounded()))%",
+                     alert: service.issues.contains(.busy)) {
+                Sparkline(samples: cpu, alert: service.issues.contains(.busy), width: 64, height: 20, track: false)
+            }
+            StatTile(label: "Memory", value: Format.bytes(service.memoryBytes)) {
+                Sparkline(samples: memory, width: 64, height: 20, relative: true, track: false,
+                          help: "Memory, last \(memory.count) samples")
+            }
+            TimelineView(.periodic(from: .now, by: 30)) { ctx in
+                StatTile(label: "Uptime", value: Format.uptime(since: service.startTime, now: ctx.date)) { EmptyView() }
+            }
+            .fixedSize()
+            .help(service.startTime.formatted(date: .abbreviated, time: .standard))
+            StatTile(label: "Procs", value: "\(service.members.count)") { EmptyView() }
+                .fixedSize()
+        }
+    }
+}
+
+/// Icon buttons with tooltips. Open is the one accent button, Stop the one red button.
+struct ServiceActions: View {
+    let service: Service
+    let model: AppModel
+    let run: ManagedRun?
+    /// The log window hides Show logs and shows a button for every port.
+    var inLogWindow = false
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        HStack(spacing: 4) {
+            if let port = service.ports.first {
+                Button { ProcessControl.open(service) } label: { ActionIcon(systemName: "arrow.up.right.square") }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.accentColor)
+                    .help("Open http://localhost:\(port)")
+                if inLogWindow {
+                    ForEach(service.ports.dropFirst(), id: \.self) { other in
+                        Button { ProcessControl.open(service, port: other) } label: {
+                            Text(":\(String(other))")
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .frame(height: 16)
+                        }
+                        .help("Open http://localhost:\(String(other))")
+                    }
+                }
+                Button { ProcessControl.copy("http://localhost:\(port)") } label: { ActionIcon(systemName: "link") }
+                    .help("Copy http://localhost:\(port)")
+            }
+            if let run, !inLogWindow {
+                Button {
+                    openWindow(id: "logs", value: run.id)
+                    NSApp.activate(ignoringOtherApps: true)
+                } label: { ActionIcon(systemName: "text.alignleft") }
+                .help("Show logs")
+            }
+            if service.rerun != nil || run != nil {
+                Button { model.restart(service) } label: { ActionIcon(systemName: "arrow.clockwise") }
+                    .help(run == nil ? "Restart inside portbar, with logs" : "Restart")
+            }
+            if let dir = service.location?.worktreeRoot ?? service.directory {
+                Button { ProcessControl.revealInFinder(dir) } label: { ActionIcon(systemName: "folder") }
+                    .help("Show in Finder")
+                if let editor = ProcessControl.editor {
+                    Button { ProcessControl.openInEditor(dir) } label: {
+                        Image(nsImage: ProcessControl.editorIcon ?? NSImage())
+                            .resizable()
+                            .frame(width: 14, height: 14)
+                            .frame(width: 18, height: 16)
+                    }
+                    .help("Open in \(editor.name)")
+                }
+            }
+            Spacer(minLength: 4)
+            StopButton(service: service, model: model, run: run)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
     }
 }
 

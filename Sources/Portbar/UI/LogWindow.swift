@@ -13,6 +13,10 @@ struct LogWindow: View {
             VStack(spacing: 0) {
                 toolbar(run)
                 Divider()
+                if let service = model.service(for: run) {
+                    serviceHeader(service, run: run)
+                    Divider()
+                }
                 ScrollViewReader { proxy in
                     ScrollView {
                         let lines = filtered(run.log.lines)
@@ -60,16 +64,34 @@ struct LogWindow: View {
             Toggle("Follow", isOn: $follow)
                 .toggleStyle(.checkbox)
             Button("Copy") { ProcessControl.copy(run.log.text) }
-            if run.isRunning {
+            // While the service is up, the controls below handle restart and stop.
+            if !run.isRunning {
+                Button("Run Again") { model.runner.restart(run) }
+            } else if model.service(for: run) == nil {
                 Button("Restart") { model.runner.restart(run) }
                 Button("Stop") { model.stop(run) }
-            } else {
-                Button("Run Again") { model.runner.restart(run) }
             }
         }
         .controlSize(.small)
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+    }
+
+    /// The same stats and controls as the panel details, while the run has a live service.
+    private func serviceHeader(_ service: Service, run: ManagedRun) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let issue = service.issues.sorted().first {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                    IssueDot(issue: issue)
+                    Text(issue.explanation)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ServiceStats(service: service, model: model)
+            ServiceActions(service: service, model: model, run: run, inLogWindow: true)
+        }
+        .padding(12)
     }
 
     private func filtered(_ lines: [LogLine]) -> [LogLine] {

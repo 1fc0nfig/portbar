@@ -54,6 +54,10 @@ enum Entry {
             DebugTools.dump()
         } else if let i = args.firstIndex(of: "--run-test"), i + 2 < args.count {
             MainActor.assumeIsolated { DebugTools.runTest(dir: args[i + 1], script: args[i + 2]) }
+        } else if let i = args.firstIndex(of: "--start"), i + 2 < args.count {
+            MainActor.assumeIsolated { DebugTools.startAndLeave(dir: args[i + 1], script: args[i + 2]) }
+        } else if args.contains("--adopt") {
+            MainActor.assumeIsolated { DebugTools.adopt() }
         } else if let i = args.firstIndex(of: "--render"), i + 1 < args.count {
             MainActor.assumeIsolated { DebugTools.render(to: args[i + 1]) }
         } else {

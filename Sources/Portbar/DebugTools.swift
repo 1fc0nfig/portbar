@@ -52,6 +52,39 @@ enum DebugTools {
               + "descendants alive=\(ProcessControl.descendants(of: run.pid).count) root alive=\(kill(run.pid, 0) == 0)")
     }
 
+    /// `--start <dir> <script>`: start a script, wait, and quit without stopping it. `--adopt` picks it up.
+    @MainActor
+    static func startAndLeave(dir: String, script name: String) {
+        _ = NSApplication.shared
+        let model = AppModel()
+        guard let script = model.catalog.packageScripts(in: dir).first(where: { $0.name == name }) else {
+            print("no script \(name) in \(dir)"); return
+        }
+        model.start(script, projectID: dir, directory: dir)
+        RunLoop.main.run(until: Date().addingTimeInterval(3))
+        let run = model.runner.runs.last!
+        print("started pid \(run.pid), \(run.log.lines.count) log lines, left running")
+    }
+
+    /// `--adopt`: show the runs an earlier portbar left running, follow their logs, then stop them.
+    @MainActor
+    static func adopt() {
+        _ = NSApplication.shared
+        let model = AppModel()
+        let runs = model.runner.runs
+        print("adopted \(runs.count) runs")
+        for run in runs { print("  \(run.name) pid \(run.pid): \(run.log.lines.count) lines") }
+        RunLoop.main.run(until: Date().addingTimeInterval(2))
+        for run in runs {
+            print("  \(run.name) after 2s: \(run.log.lines.count) lines, last: \(run.log.lines.last?.plain ?? "")")
+            model.stop(run)
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(4))
+        for run in runs {
+            print("  \(run.name) after stop: running=\(run.isRunning) last: \(run.log.lines.last?.plain ?? "")")
+        }
+    }
+
     @MainActor
     static func renderLogSample(to path: String) {
         let esc = "\u{1B}"

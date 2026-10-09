@@ -44,12 +44,12 @@ final class LogBuffer {
 @MainActor
 @Observable
 final class ManagedRun: Identifiable {
-    let id = UUID()
+    let id: UUID
     let projectID: String
     let directory: String
     let name: String
     let command: String
-    let started = Date()
+    let started: Date
     let log = LogBuffer()
     fileprivate(set) var pid: pid_t = 0
     /// The exit status, or the signal number when a signal ended the process.
@@ -57,16 +57,135 @@ final class ManagedRun: Identifiable {
     /// The signal that ended the process, if any.
     fileprivate(set) var signal: Int32?
     fileprivate(set) var stoppedByUser = false
+    /// Started by an earlier portbar. When it ends, its exit status is unknown.
+    fileprivate(set) var adopted = false
+    @ObservationIgnored fileprivate var tail: LogTail?
+    @ObservationIgnored fileprivate var exitWatch: DispatchSourceProcess?
 
     var isRunning: Bool { exitCode == nil }
     var failed: Bool { (exitCode ?? 0) != 0 && !stoppedByUser }
-    var exit: ExitStatus? { exitCode.map { ExitStatus(code: $0, signal: signal) } }
+    var exit: ExitStatus? { adopted ? nil : exitCode.map { ExitStatus(code: $0, signal: signal) } }
 
-    init(projectID: String, directory: String, name: String, command: String) {
+    init(id: UUID = UUID(), projectID: String, directory: String, name: String, command: String, started: Date = Date()) {
+        self.id = id
         self.projectID = projectID
         self.directory = directory
         self.name = name
         self.command = command
+        self.started = started
+    }
+}
+
+/// What portbar writes next to each run's log, so a later portbar can pick the run up again.
+struct RunRecord: Codable {
+    let id: UUID
+    let projectID: String
+    let directory: String
+    let name: String
+    let command: String
+    let started: Date
+    let pid: pid_t
+    /// The process start time in seconds. A reused pid has a different one.
+    let processStart: Int
+}
+
+/// Run logs and records live in ~/Library/Logs/portbar. Scripts write their output to the log file
+/// themselves, so the output survives a portbar restart.
+enum RunFiles {
+    static let directory: URL = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Logs/portbar", isDirectory: true)
+
+    static func log(_ id: UUID) -> URL { directory.appendingPathComponent("\(id.uuidString).log") }
+    static func record(_ id: UUID) -> URL { directory.appendingPathComponent("\(id.uuidString).json") }
+
+    static func save(_ record: RunRecord) {
+        guard let data = try? JSONEncoder().encode(record) else { return }
+        try? data.write(to: Self.record(record.id), options: .atomic)
+    }
+
+    static func records() -> [RunRecord] {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        return files.filter { $0.pathExtension == "json" }.compactMap {
+            guard let data = try? Data(contentsOf: $0) else { return nil }
+            return try? JSONDecoder().decode(RunRecord.self, from: data)
+        }
+    }
+
+    static func remove(_ id: UUID) {
+        try? FileManager.default.removeItem(at: log(id))
+        try? FileManager.default.removeItem(at: record(id))
+    }
+
+    /// Log files with no record, left behind when portbar crashed during a start.
+    static func removeOrphans(keeping ids: Set<UUID>) {
+        let files = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)) ?? []
+        for file in files where file.pathExtension == "log" {
+            if let id = UUID(uuidString: file.deletingPathExtension().lastPathComponent), !ids.contains(id) {
+                try? FileManager.default.removeItem(at: file)
+            }
+        }
+    }
+
+    /// The start time of a live process in seconds, or nil when the pid is gone.
+    static func processStart(_ pid: pid_t) -> Int? {
+        var info = proc_bsdinfo()
+        let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+        guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { return nil }
+        return Int(info.pbi_start_tvsec)
+    }
+}
+
+/// Follows a growing log file and feeds new output to a log buffer.
+@MainActor
+final class LogTail {
+    private let handle: FileHandle
+    private let source: DispatchSourceFileSystemObject
+    private var offset: UInt64 = 0
+    /// Past this size the file starts over. The buffer keeps the recent lines anyway.
+    private static let maxFileSize: UInt64 = 32 << 20
+    /// How much of an existing file to read when portbar picks a run up again.
+    private static let backlog: UInt64 = 512 << 10
+
+    init?(url: URL, into log: LogBuffer, fromEnd: Bool = false) {
+        guard let handle = try? FileHandle(forUpdating: url) else { return nil }
+        self.handle = handle
+        source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: handle.fileDescriptor, eventMask: [.extend, .write], queue: .main)
+        if fromEnd, let size = try? handle.seekToEnd(), size > Self.backlog {
+            offset = size - Self.backlog
+            // Skip the first line, it is likely cut.
+            if let data = read(), let newline = data.firstIndex(of: UInt8(ascii: "\n")) {
+                log.append(String(decoding: data[data.index(after: newline)...], as: UTF8.self))
+            }
+        }
+        source.setEventHandler { [weak self, weak log] in
+            MainActor.assumeIsolated { if let log { self?.drain(into: log) } }
+        }
+        source.resume()
+        drain(into: log)
+    }
+
+    /// Reads all output written so far.
+    func drain(into log: LogBuffer) {
+        guard let data = read() else { return }
+        log.append(String(decoding: data, as: UTF8.self))
+        if offset > Self.maxFileSize {
+            // Scripts open the file in append mode, so they keep writing at the new end.
+            try? handle.truncate(atOffset: 0)
+            offset = 0
+        }
+    }
+
+    private func read() -> Data? {
+        try? handle.seek(toOffset: offset)
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return nil }
+        offset += UInt64(data.count)
+        return data
+    }
+
+    func close() {
+        source.cancel()
+        try? handle.close()
     }
 }
 
@@ -75,6 +194,11 @@ final class ManagedRun: Identifiable {
 final class ScriptRunner {
     private(set) var runs: [ManagedRun] = []
     @ObservationIgnored private var processes: [UUID: Process] = [:]
+
+    init() {
+        try? FileManager.default.createDirectory(at: RunFiles.directory, withIntermediateDirectories: true)
+        adoptEarlierRuns()
+    }
 
     func runs(for projectID: String) -> [ManagedRun] { runs.filter { $0.projectID == projectID } }
 
@@ -100,28 +224,21 @@ final class ScriptRunner {
         env["PY_COLORS"] = "1"
         process.environment = env
 
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = pipe
+        // Append mode, so the reader can truncate a large file and the script keeps writing.
+        let path = RunFiles.log(run.id).path
+        let fd = open(path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
+        let output = fd >= 0 ? FileHandle(fileDescriptor: fd, closeOnDealloc: true) : FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = output
         process.standardInput = FileHandle.nullDevice
 
-        pipe.fileHandleForReading.readabilityHandler = { [weak run] handle in
-            let data = handle.availableData
-            guard !data.isEmpty else { handle.readabilityHandler = nil; return }
-            let chunk = String(decoding: data, as: UTF8.self)
-            DispatchQueue.main.async { MainActor.assumeIsolated { run?.log.append(chunk) } }
-        }
         process.terminationHandler = { [weak self, weak run] p in
             let code = p.terminationStatus
             let signal = p.terminationReason == .uncaughtSignal ? code : nil
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let run else { return }
-                    let exit = ExitStatus(code: code, signal: signal)
-                    run.log.flush()
-                    run.log.appendNote("[\(exit.long)]")
-                    run.signal = signal
-                    run.exitCode = code
+                    self?.finish(run) { run.signal = signal; run.exitCode = code }
                     self?.processes[run.id] = nil
                 }
             }
@@ -132,12 +249,62 @@ final class ScriptRunner {
             try process.run()
             run.pid = process.processIdentifier
             processes[run.id] = process
+            RunFiles.save(RunRecord(id: run.id, projectID: projectID, directory: directory, name: name,
+                                    command: command, started: run.started, pid: run.pid,
+                                    processStart: RunFiles.processStart(run.pid) ?? 0))
+            run.tail = LogTail(url: RunFiles.log(run.id), into: run.log)
         } catch {
             run.log.appendNote("Could not start: \(error.localizedDescription)")
             run.exitCode = -1
         }
+        if fd >= 0 { try? output.close() }
         runs.append(run)
         return run
+    }
+
+    /// Picks up scripts an earlier portbar started that still run. Removes files of runs that ended.
+    private func adoptEarlierRuns() {
+        let records = RunFiles.records()
+        RunFiles.removeOrphans(keeping: Set(records.map(\.id)))
+        for record in records {
+            guard record.pid > 0, RunFiles.processStart(record.pid) == record.processStart else {
+                RunFiles.remove(record.id)
+                continue
+            }
+            let run = ManagedRun(id: record.id, projectID: record.projectID, directory: record.directory,
+                                 name: record.name, command: record.command, started: record.started)
+            run.pid = record.pid
+            run.adopted = true
+            run.log.appendNote("$ \(record.command)  (started by an earlier portbar)")
+            run.tail = LogTail(url: RunFiles.log(record.id), into: run.log, fromEnd: true)
+
+            // Not our child, so watch for its exit with kqueue.
+            let watch = DispatchSource.makeProcessSource(identifier: record.pid, eventMask: .exit, queue: .main)
+            watch.setEventHandler { [weak self, weak run] in
+                MainActor.assumeIsolated {
+                    guard let run else { return }
+                    self?.finish(run) { run.exitCode = 0 }
+                }
+            }
+            watch.resume()
+            run.exitWatch = watch
+            runs.append(run)
+            // It may have ended before the watch started.
+            if kill(record.pid, 0) != 0 { finish(run) { run.exitCode = 0 } }
+        }
+    }
+
+    /// Reads the last output, then marks the run as ended.
+    private func finish(_ run: ManagedRun, _ setExit: () -> Void) {
+        guard run.isRunning else { return }
+        run.tail?.drain(into: run.log)
+        run.tail?.close()
+        run.tail = nil
+        run.exitWatch?.cancel()
+        run.exitWatch = nil
+        run.log.flush()
+        setExit()
+        run.log.appendNote(run.exit.map { "[\($0.long)]" } ?? "[ended]")
     }
 
     func stop(_ run: ManagedRun, force: Bool = false) {
@@ -157,6 +324,11 @@ final class ScriptRunner {
     }
 
     func dismiss(_ run: ManagedRun) {
+        run.tail?.close()
+        run.tail = nil
+        run.exitWatch?.cancel()
+        run.exitWatch = nil
+        RunFiles.remove(run.id)
         runs.removeAll { $0.id == run.id }
     }
 
