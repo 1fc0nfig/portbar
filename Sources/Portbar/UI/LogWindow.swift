@@ -57,6 +57,16 @@ struct LogWindow: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             if let exit = run.exit { ExitBadge(exit: exit, failed: run.failed) }
+            if run.stopping {
+                ProgressView().controlSize(.mini)
+                Text("Stopping…").font(.system(size: 11)).foregroundStyle(.secondary)
+            } else if let failure = run.stopFailure, run.isRunning {
+                Text(failure)
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color(nsColor: .systemRed))
+                    .lineLimit(1)
+                Button("Force Kill") { model.stop(run, force: true) }
+            }
             Spacer()
             TextField("Filter", text: $filter)
                 .textFieldStyle(.roundedBorder)

@@ -73,10 +73,11 @@ struct ServiceRow: View {
 
             Spacer(minLength: 6)
 
-            if settings.showSparkline, let samples = model.cpuHistory[service.id] {
+            if settings.showSparkline, settings.panelWidth >= Settings.sparklineMinWidth,
+               let samples = model.cpuHistory[service.id] {
                 Sparkline(samples: samples, alert: service.issues.contains(.busy))
             }
-            if settings.showMemory {
+            if settings.showMemory, settings.panelWidth >= Settings.memoryMinWidth {
                 Text(Format.bytes(service.memoryBytes))
                     .font(.system(size: 10).monospacedDigit())
                     .foregroundStyle(.tertiary)
@@ -119,11 +120,12 @@ struct ServiceRow: View {
         }
     }
 
+    /// The name truncates last: the command line and the folder give way first.
     private var title: some View {
         Text(service.kind.name)
             .font(.system(size: 13, weight: .medium))
             .lineLimit(1)
-            .fixedSize()
+            .layoutPriority(1)
     }
 
     private var commandText: some View {
@@ -275,30 +277,51 @@ struct ServiceDetails: View {
 }
 
 /// CPU, memory, uptime, and process count. The panel details and the log window show it.
+/// A narrow panel drops the charts first, then puts the tiles on two lines.
 struct ServiceStats: View {
     let service: Service
     let model: AppModel
 
     var body: some View {
-        HStack(spacing: 6) {
-            let cpu = model.cpuHistory[service.id] ?? []
-            let memory = model.memoryHistory[service.id] ?? []
-            StatTile(label: "CPU", value: "\(Int(service.cpuPercent.rounded()))%",
-                     alert: service.issues.contains(.busy)) {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 6) {
+                usage(charts: true)
+                time
+            }
+            HStack(spacing: 6) {
+                usage(charts: false)
+                time
+            }
+            VStack(spacing: 6) {
+                HStack(spacing: 6) { usage(charts: false) }
+                HStack(spacing: 6) { time }
+            }
+        }
+    }
+
+    @ViewBuilder private func usage(charts: Bool) -> some View {
+        let cpu = model.cpuHistory[service.id] ?? []
+        let memory = model.memoryHistory[service.id] ?? []
+        StatTile(label: "CPU", value: "\(Int(service.cpuPercent.rounded()))%",
+                 alert: service.issues.contains(.busy)) {
+            if charts {
                 Sparkline(samples: cpu, alert: service.issues.contains(.busy), width: 64, height: 20, track: false)
             }
-            StatTile(label: "Memory", value: Format.bytes(service.memoryBytes)) {
+        }
+        StatTile(label: "Memory", value: Format.bytes(service.memoryBytes)) {
+            if charts {
                 Sparkline(samples: memory, width: 64, height: 20, relative: true, track: false,
                           help: "Memory, last \(memory.count) samples")
             }
-            TimelineView(.periodic(from: .now, by: 30)) { ctx in
-                StatTile(label: "Uptime", value: Format.uptime(since: service.startTime, now: ctx.date)) { EmptyView() }
-            }
-            .fixedSize()
-            .help(service.startTime.formatted(date: .abbreviated, time: .standard))
-            StatTile(label: "Procs", value: "\(service.members.count)") { EmptyView() }
-                .fixedSize()
         }
+    }
+
+    @ViewBuilder private var time: some View {
+        TimelineView(.periodic(from: .now, by: 30)) { ctx in
+            StatTile(label: "Uptime", value: Format.uptime(since: service.startTime, now: ctx.date)) { EmptyView() }
+        }
+        .help(service.startTime.formatted(date: .abbreviated, time: .standard))
+        StatTile(label: "Procs", value: "\(service.members.count)") { EmptyView() }
     }
 }
 
@@ -612,7 +635,8 @@ struct RunRow: View {
                 }
                 Text(status)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(run.failed ? AnyShapeStyle(Color(nsColor: .systemRed)) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(run.failed || run.stopFailure != nil
+                                     ? AnyShapeStyle(Color(nsColor: .systemRed)) : AnyShapeStyle(.secondary))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -645,13 +669,20 @@ struct RunRow: View {
                 openWindow(id: "logs", value: run.id)
                 NSApp.activate(ignoringOtherApps: true)
             }
-            if run.isRunning { Button("Stop") { model.stop(run) } } else { Button("Run Again") { model.runner.restart(run) } }
+            if run.isRunning {
+                Button("Stop") { model.stop(run) }
+                Button("Force Kill") { model.stop(run, force: true) }
+            } else {
+                Button("Run Again") { model.runner.restart(run) }
+            }
             Divider()
             Button("Project Settings…") { model.showSettings(.projects, project: run.projectID) }
         }
     }
 
     private var status: String {
+        if run.stopping { return "Stopping…" }
+        if let failure = run.stopFailure, run.isRunning { return failure }
         if run.isRunning {
             return run.log.lines.last { !$0.plain.trimmingCharacters(in: .whitespaces).isEmpty }?.plain ?? run.command
         }

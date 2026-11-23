@@ -48,6 +48,21 @@ struct CustomScript: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
     var command: String
+    /// Runs on Stop and Restart instead of signals alone, for services outside the Mac process tree
+    /// (Docker, Sail, dev containers). `nil` or empty uses signals only.
+    var stopCommand: String?
+
+    init(name: String, command: String, stopCommand: String? = nil) {
+        self.name = name
+        self.command = command
+        self.stopCommand = stopCommand
+    }
+
+    /// The stop command, or nil when it is empty.
+    var stop: String? {
+        let s = stopCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return s.isEmpty ? nil : s
+    }
 }
 
 /// Per-repository preferences. Keyed by the main checkout path.
@@ -152,6 +167,9 @@ struct Settings: Codable, Equatable {
     static let defaultMaxHeight: Double = 600
     static let widthRange: ClosedRange<Double> = 360...760
     static let heightRange: ClosedRange<Double> = 280...1000
+    /// Narrower panels drop these columns, so a row never gets wider than the panel.
+    static let sparklineMinWidth: Double = 440
+    static let memoryMinWidth: Double = 400
 
     /// Common code folders that exist on this Mac.
     static var defaultRoots: [String] {
