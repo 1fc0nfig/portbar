@@ -53,6 +53,14 @@ enum ProcessControl {
         return result
     }
 
+    /// The docker CLI or a compose plugin. The processes it starts run in the Docker VM, out of reach of signals.
+    static func isDockerClient(_ pid: pid_t) -> Bool {
+        var buffer = [CChar](repeating: 0, count: 64)
+        guard proc_name(pid, &buffer, UInt32(buffer.count)) > 0 else { return false }
+        let name = String(cString: buffer)
+        return name == "docker" || name.hasPrefix("docker-") || name.hasPrefix("com.docker.")
+    }
+
     static func open(_ service: Service, port: UInt16? = nil) {
         guard let port = port ?? service.ports.first,
               let url = URL(string: "http://localhost:\(port)") else { return }

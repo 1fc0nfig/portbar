@@ -310,6 +310,7 @@ private struct ProjectDetail: View {
     let model: AppModel
     @State private var newName = ""
     @State private var newCommand = ""
+    @State private var newStop = ""
 
     private var settings: SettingsStore { model.settings }
     private var config: ProjectConfig { settings.project(id) ?? ProjectConfig(id: id) }
@@ -385,31 +386,47 @@ private struct ProjectDetail: View {
                         .foregroundStyle(.secondary)
                 }
                 ForEach(config.customScripts) { script in
-                    scriptRow(name: script.name, detail: script.command, isFavorite: favorites.contains(script.name),
-                              onDelete: { settings.update(id) { $0.customScripts.removeAll { $0.id == script.id } } })
+                    VStack(alignment: .leading, spacing: 4) {
+                        scriptRow(name: script.name, detail: script.command, isFavorite: favorites.contains(script.name),
+                                  onDelete: { settings.update(id) { $0.customScripts.removeAll { $0.id == script.id } } })
+                        stopField(Binding(
+                            get: { script.stopCommand ?? "" },
+                            set: { v in
+                                settings.update(id) { c in
+                                    guard let i = c.customScripts.firstIndex(where: { $0.id == script.id }) else { return }
+                                    c.customScripts[i].stopCommand = v.isEmpty ? nil : v
+                                }
+                            }))
+                            .padding(.leading, 28)
+                    }
                 }
                 ForEach(packageScripts) { script in
                     scriptRow(name: script.name, detail: script.detail, isFavorite: favorites.contains(script.name),
                               onDelete: nil)
                 }
-                HStack(spacing: 6) {
-                    TextField("Name", text: $newName, prompt: Text("name"))
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 100)
-                    TextField("Command", text: $newCommand, prompt: Text("docker compose up"))
-                        .labelsHidden()
-                        .textFieldStyle(.roundedBorder)
-                        .font(.system(.body, design: .monospaced))
-                        .onSubmit(addScript)
-                    Button("Add", action: addScript)
-                        .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
-                                  || newCommand.trimmingCharacters(in: .whitespaces).isEmpty)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 6) {
+                        TextField("Name", text: $newName, prompt: Text("name"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 100)
+                        TextField("Command", text: $newCommand, prompt: Text("docker compose up"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(.body, design: .monospaced))
+                            .onSubmit(addScript)
+                        Button("Add", action: addScript)
+                            .disabled(newName.trimmingCharacters(in: .whitespaces).isEmpty
+                                      || newCommand.trimmingCharacters(in: .whitespaces).isEmpty)
+                    }
+                    stopField($newStop, onSubmit: addScript)
+                        .padding(.leading, 106)
+                        .padding(.trailing, 48)
                 }
             } header: {
                 Text("Scripts")
             } footer: {
-                Text("Starred scripts show as buttons next to pinned projects. Scripts run in the project folder with your login shell.")
+                Text("Starred scripts show as buttons next to pinned projects. Scripts run in the project folder with your login shell. A stop command runs on Stop and Restart, for services that signals cannot reach, such as Docker containers. If it fails, the script keeps running.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -421,9 +438,25 @@ private struct ProjectDetail: View {
         let name = newName.trimmingCharacters(in: .whitespaces)
         let command = newCommand.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty, !command.isEmpty else { return }
-        settings.update(id) { $0.customScripts.append(CustomScript(name: name, command: command)) }
+        let stop = newStop.trimmingCharacters(in: .whitespaces)
+        settings.update(id) { $0.customScripts.append(CustomScript(name: name, command: command, stopCommand: stop.isEmpty ? nil : stop)) }
         newName = ""
         newCommand = ""
+        newStop = ""
+    }
+
+    /// The optional stop command of a custom script.
+    private func stopField(_ text: Binding<String>, onSubmit: @escaping () -> Void = {}) -> some View {
+        HStack(spacing: 6) {
+            Text("Stop")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Stop command", text: text, prompt: Text("optional: docker compose stop"))
+                .labelsHidden()
+                .textFieldStyle(.roundedBorder)
+                .font(.system(.caption, design: .monospaced))
+                .onSubmit(onSubmit)
+        }
     }
 
     private func scriptRow(name: String, detail: String, isFavorite: Bool, onDelete: (() -> Void)?) -> some View {

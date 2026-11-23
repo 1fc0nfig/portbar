@@ -3,6 +3,8 @@ import Foundation
 
 /// Declaration order is display priority: the first issue of a service is the one its row shows.
 enum Issue: Hashable, Comparable {
+    /// The script's stop command failed, so the service still runs.
+    case stopFailed
     /// Detached and running for longer than the "forgotten" limit in Settings.
     case forgotten
     /// Sustained high CPU.
@@ -14,6 +16,7 @@ enum Issue: Hashable, Comparable {
 
     var label: String {
         switch self {
+        case .stopFailed: "Stop failed"
         case .forgotten: "Forgotten"
         case .busy: "High CPU"
         case .unresponsive: "Not responding"
@@ -23,6 +26,7 @@ enum Issue: Hashable, Comparable {
 
     var explanation: String {
         switch self {
+        case .stopFailed: "The script's stop command failed, so the service still runs. Its log shows why."
         case .forgotten: "The terminal or tool that started this process is gone, and it has run for a long time."
         case .busy: "CPU use has been above 80% for a while."
         case .unresponsive: "The port is open, but the server does not answer HTTP requests."
@@ -143,6 +147,17 @@ struct Snapshot {
     var portCount: Int { services.reduce(0) { $0 + $1.ports.count } }
 
     /// The same snapshot without the given services. Drops groups that end up empty.
+    /// The same snapshot with each service changed by `change`.
+    func mapServices(_ change: (Service) -> Service) -> Snapshot {
+        var copy = self
+        for p in copy.projects.indices {
+            for w in copy.projects[p].worktrees.indices {
+                copy.projects[p].worktrees[w].services = copy.projects[p].worktrees[w].services.map(change)
+            }
+        }
+        return copy
+    }
+
     func removing<S: Sequence>(_ ids: S) -> Snapshot where S.Element == String {
         let ids = Set(ids)
         guard !ids.isEmpty else { return self }

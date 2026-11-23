@@ -18,6 +18,7 @@ portbar reads the process table directly through libproc. It does not start `lso
 
 - **Pinned projects** stay at the top of the panel, also when they are stopped. Pin a project from its right-click menu or in Settings > Projects. Drag to change the order.
 - **Scripts:** the play button next to a project lists its `package.json` scripts and your own commands. Starred scripts show as buttons next to pinned projects. portbar runs each script in your login shell, keeps its logs, and stops the whole process tree when you stop it.
+- **Stop commands:** a custom script can have a stop command, such as `./vendor/bin/sail stop` or `docker compose stop`. Signals cannot reach processes inside Docker or a dev container, so Stop and Restart run the stop command first. If it fails, the script keeps running and its log shows the exit code.
 - **Project icons:** portbar looks for `apple-touch-icon.png`, `icon.png`, `favicon.*`, and the Expo `app.json` icon. You can pick another file, use the framework mark, or turn icons off.
 - **Menu bar:** the default is a 2×2 dot grid. Each pinned project has a dot: filled when it runs, a ring when it is stopped, and orange when it needs attention. Free dots show other running projects. Settings > General also has "Icon" and "Icon and count".
 - **Panel:** Settings > Panel sets the density and turns the command line, CPU sparkline, memory, and uptime on or off.

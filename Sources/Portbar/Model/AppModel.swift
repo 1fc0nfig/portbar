@@ -102,6 +102,8 @@ final class AppModel {
     private(set) var snapshot = Snapshot()
     /// Services the user just stopped, by id. Hidden while they shut down.
     @ObservationIgnored private var stopping: [String: Date] = [:]
+    /// The run behind a hidden service whose stop command still runs, by service id.
+    @ObservationIgnored private var stoppingRuns: [String: UUID] = [:]
     /// Services that just exited on their own, shown dimmed for a moment. See `apply`.
     @ObservationIgnored private var ghosts: [String: (service: Service, since: Date)] = [:]
     private static let exitGrace: TimeInterval = 3
@@ -145,6 +147,9 @@ final class AppModel {
 
     init() {
         DispatchQueue.global(qos: .utility).async { _ = LoginEnvironment.shared }
+        runner.stopCommand = { [settings] run in
+            settings.project(run.projectID)?.customScripts.first { $0.name == run.name }?.stop
+        }
         refresh(probe: false)
         reschedule()
     }
@@ -294,8 +299,21 @@ final class AppModel {
 
     private func apply(_ fresh: Snapshot) {
         let now = Date()
-        stopping = stopping.filter { now.timeIntervalSince($0.value) < 10 }
-        let live = fresh.removing(stopping.keys)
+        // A service stays hidden while its run's stop command runs, which can take longer than 10 seconds.
+        let busy = Set(runner.runs.filter(\.stopping).map(\.id))
+        stopping = stopping.filter { id, date in
+            now.timeIntervalSince(date) < 10 || stoppingRuns[id].map(busy.contains) == true
+        }
+        stoppingRuns = stoppingRuns.filter { stopping[$0.key] != nil }
+        var live = fresh.removing(stopping.keys)
+        let stuck = runner.runs.filter { $0.isRunning && $0.stopFailure != nil }
+        if !stuck.isEmpty {
+            live = live.mapServices { s in
+                var s = s
+                if stuck.contains(where: { $0.pid == s.root.pid || s.ancestorPids.contains($0.pid) }) { s.issues.insert(.stopFailed) }
+                return s
+            }
+        }
 
         // A service that exits on its own stays as a dimmed ghost for a few seconds. If nothing
         // replaces it (a restart, a hot reload), it turns into an Exited row in the same place.
@@ -395,21 +413,32 @@ final class AppModel {
     func stop(_ service: Service, includeLaunchers: Bool = false, force: Bool = false) {
         let run = run(for: service)
         let again = service.rerun
+        // A stop command stops the whole run: it is the user's way to reach what signals cannot.
+        let useRunner = run.map { includeLaunchers || (!force && runner.stopCommand($0) != nil) } ?? false
         // Swap the row for its stopped row at once, and keep it out while the process shuts down.
         stopping[service.id] = Date()
-        withAnimation(.smooth(duration: 0.3)) {
-            snapshot = snapshot.removing(stopping.keys)
-            stopped.append(StoppedEntry(
+        if useRunner, let run { stoppingRuns[service.id] = run.id }
+        let entry = StoppedEntry(
             projectID: service.location?.repoRoot ?? "~other",
             kind: service.kind,
             command: run?.command ?? again?.command,
             directory: run?.directory ?? again?.directory ?? service.directory,
             ports: service.ports,
             run: run
-        ))
+        )
+        withAnimation(.smooth(duration: 0.3)) {
+            snapshot = snapshot.removing(stopping.keys)
+            stopped.append(entry)
         }
-        if let run, includeLaunchers {
-            runner.stop(run, force: force)
+        if useRunner, let run {
+            runner.stop(run, force: force) { [weak self] ended in
+                guard let self, !ended else { return }
+                // The stop command failed and the service still runs: bring its row back.
+                self.stopping[service.id] = nil
+                self.stoppingRuns[service.id] = nil
+                withAnimation(.smooth(duration: 0.3)) { self.stopped.removeAll { $0.id == entry.id } }
+                self.refresh()
+            }
         } else {
             ProcessControl.stop(service, includeLaunchers: includeLaunchers, force: force)
         }
@@ -479,8 +508,8 @@ final class AppModel {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { self.runAgain(entry) }
     }
 
-    func stop(_ run: ManagedRun) {
-        runner.stop(run)
+    func stop(_ run: ManagedRun, force: Bool = false) {
+        runner.stop(run, force: force)
         refreshSoon()
     }
 

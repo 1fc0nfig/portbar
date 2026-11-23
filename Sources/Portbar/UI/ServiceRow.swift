@@ -635,7 +635,8 @@ struct RunRow: View {
                 }
                 Text(status)
                     .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(run.failed ? AnyShapeStyle(Color(nsColor: .systemRed)) : AnyShapeStyle(.secondary))
+                    .foregroundStyle(run.failed || run.stopFailure != nil
+                                     ? AnyShapeStyle(Color(nsColor: .systemRed)) : AnyShapeStyle(.secondary))
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
@@ -668,13 +669,20 @@ struct RunRow: View {
                 openWindow(id: "logs", value: run.id)
                 NSApp.activate(ignoringOtherApps: true)
             }
-            if run.isRunning { Button("Stop") { model.stop(run) } } else { Button("Run Again") { model.runner.restart(run) } }
+            if run.isRunning {
+                Button("Stop") { model.stop(run) }
+                Button("Force Kill") { model.stop(run, force: true) }
+            } else {
+                Button("Run Again") { model.runner.restart(run) }
+            }
             Divider()
             Button("Project Settings…") { model.showSettings(.projects, project: run.projectID) }
         }
     }
 
     private var status: String {
+        if run.stopping { return "Stopping…" }
+        if let failure = run.stopFailure, run.isRunning { return failure }
         if run.isRunning {
             return run.log.lines.last { !$0.plain.trimmingCharacters(in: .whitespaces).isEmpty }?.plain ?? run.command
         }

@@ -48,6 +48,21 @@ struct CustomScript: Codable, Identifiable, Hashable {
     var id = UUID()
     var name: String
     var command: String
+    /// Runs on Stop and Restart instead of signals alone, for services outside the Mac process tree
+    /// (Docker, Sail, dev containers). `nil` or empty uses signals only.
+    var stopCommand: String?
+
+    init(name: String, command: String, stopCommand: String? = nil) {
+        self.name = name
+        self.command = command
+        self.stopCommand = stopCommand
+    }
+
+    /// The stop command, or nil when it is empty.
+    var stop: String? {
+        let s = stopCommand?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return s.isEmpty ? nil : s
+    }
 }
 
 /// Per-repository preferences. Keyed by the main checkout path.

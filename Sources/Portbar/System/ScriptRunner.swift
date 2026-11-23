@@ -61,6 +61,10 @@ final class ManagedRun: Identifiable {
     fileprivate(set) var ended: Date?
     /// Started by an earlier portbar. When it ends, its exit status is unknown.
     fileprivate(set) var adopted = false
+    /// The script's stop command runs now.
+    fileprivate(set) var stopping = false
+    /// Why the last stop command did not stop the script. Cleared by the next stop.
+    fileprivate(set) var stopFailure: String?
     @ObservationIgnored fileprivate var tail: LogTail?
     @ObservationIgnored fileprivate var exitWatch: DispatchSourceProcess?
 
@@ -196,6 +200,16 @@ final class LogTail {
 final class ScriptRunner {
     private(set) var runs: [ManagedRun] = []
     @ObservationIgnored private var processes: [UUID: Process] = [:]
+    /// Stop commands that run now, by run id.
+    @ObservationIgnored private var stopProcesses: [UUID: Process] = [:]
+    /// Called once when a run ends (true), or when its stop command fails (false).
+    /// Stop commands portbar ended because they ran past `stopTimeout`.
+    @ObservationIgnored private var timedOut: Set<UUID> = []
+    @ObservationIgnored private var stopWaiters: [UUID: [(Bool) -> Void]] = [:]
+    /// The stop command of a run, read at stop time, so an edit in Settings applies to runs that already run.
+    @ObservationIgnored var stopCommand: (ManagedRun) -> String? = { _ in nil }
+    /// How long a stop command may run before portbar ends it and reports a failure.
+    static let stopTimeout: TimeInterval = 60
 
     init() {
         try? FileManager.default.createDirectory(at: RunFiles.directory, withIntermediateDirectories: true)
@@ -301,29 +315,137 @@ final class ScriptRunner {
     private func finish(_ run: ManagedRun, _ setExit: () -> Void) {
         guard run.isRunning else { return }
         run.tail?.drain(into: run.log)
-        run.tail?.close()
-        run.tail = nil
+        // A stop command still writes to the log. Its end closes the tail.
+        if stopProcesses[run.id] == nil {
+            run.tail?.close()
+            run.tail = nil
+        }
         run.exitWatch?.cancel()
         run.exitWatch = nil
         run.log.flush()
         setExit()
         run.ended = Date()
         run.log.appendNote(run.exit.map { "[\($0.long)]" } ?? "[ended]")
+        resolveWaiters(run, true)
     }
 
-    func stop(_ run: ManagedRun, force: Bool = false) {
-        guard run.isRunning, run.pid > 0 else { return }
+    private func resolveWaiters(_ run: ManagedRun, _ ended: Bool) {
+        let waiters = stopWaiters.removeValue(forKey: run.id) ?? []
+        for waiter in waiters { waiter(ended) }
+    }
+
+    /// Stops the run. With a stop command, runs it first and signals the process tree only when it
+    /// succeeds. A failed stop command leaves the script running and says why in the log.
+    /// `then` gets true when the run has ended, false when the stop command failed.
+    func stop(_ run: ManagedRun, force: Bool = false, then: ((Bool) -> Void)? = nil) {
+        guard run.isRunning, run.pid > 0 else { then?(!run.isRunning); return }
+        if let then { stopWaiters[run.id, default: []].append(then) }
+        if !force, let command = stopCommand(run) {
+            runStopCommand(command, for: run)
+            return
+        }
+        // Force Kill ends a stop command that hangs, too.
+        if let stopper = stopProcesses[run.id] { ProcessControl.killTree(stopper.processIdentifier, force: true) }
         run.stoppedByUser = true
+        let tree = [run.pid] + ProcessControl.descendants(of: run.pid)
         ProcessControl.killTree(run.pid, force: force)
+        if tree.contains(where: { ProcessControl.isDockerClient($0) }) {
+            run.log.appendNote("Processes inside Docker can keep running after Stop. "
+                               + "Add a stop command to this script in Project Settings → Scripts.")
+        }
     }
 
+    private func runStopCommand(_ command: String, for run: ManagedRun) {
+        guard !run.stopping else { return }
+        run.stopping = true
+        run.stopFailure = nil
+        run.stoppedByUser = true
+        run.log.appendNote("$ \(command)  (stop command)")
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: LoginEnvironment.shell)
+        process.arguments = ["-c", command]
+        process.currentDirectoryURL = URL(fileURLWithPath: run.directory)
+        var env = LoginEnvironment.shared
+        env["PORTBAR"] = "1"
+        process.environment = env
+        // Same log file as the script, so the output shows in its log window.
+        let fd = open(RunFiles.log(run.id).path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0o644)
+        let output = fd >= 0 ? FileHandle(fileDescriptor: fd, closeOnDealloc: true) : FileHandle.nullDevice
+        process.standardOutput = output
+        process.standardError = output
+        process.standardInput = FileHandle.nullDevice
+
+        process.terminationHandler = { [weak self, weak run] p in
+            let status = ExitStatus(code: p.terminationStatus,
+                                    signal: p.terminationReason == .uncaughtSignal ? p.terminationStatus : nil)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let run else { return }
+                    self.stopEnded(run, status: status)
+                }
+            }
+        }
+        do {
+            try process.run()
+            stopProcesses[run.id] = process
+            let (id, pid) = (run.id, process.processIdentifier)
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.stopTimeout) { [weak self] in
+                guard let self, self.stopProcesses[id] === process else { return }
+                self.timedOut.insert(id)
+                ProcessControl.killTree(pid, force: false)
+            }
+        } catch {
+            run.stopping = false
+            run.stoppedByUser = false
+            run.stopFailure = "Stop command could not start"
+            run.log.appendNote("[stop command could not start: \(error.localizedDescription)]")
+            resolveWaiters(run, false)
+        }
+        if fd >= 0 { try? output.close() }
+    }
+
+    private func stopEnded(_ run: ManagedRun, status: ExitStatus) {
+        stopProcesses[run.id] = nil
+        let timedOut = self.timedOut.remove(run.id) != nil
+        run.stopping = false
+        run.tail?.drain(into: run.log)
+        run.log.flush()
+        if !run.isRunning {
+            // The script ended while the stop command ran.
+            run.tail?.close()
+            run.tail = nil
+            run.log.appendNote("[stop command: \(status.long)]")
+            return
+        }
+        if status.isSuccess && !timedOut {
+            run.log.appendNote("[stop command: \(status.long)]")
+            // The script's own processes on this Mac, such as the docker CLI, end the usual way.
+            ProcessControl.killTree(run.pid, force: false)
+            return
+        }
+        let reason = timedOut ? "timed out after \(Int(Self.stopTimeout)) s" : status.long
+        run.stopFailure = "Stop command failed: \(reason)"
+        run.stoppedByUser = false
+        run.log.appendNote("[stop command failed: \(reason). The script still runs. "
+                           + "Stop again to retry, or use Force Kill.]")
+        resolveWaiters(run, false)
+    }
+
+    /// Stops the run, waits until it has ended, then starts it again. A failed stop command cancels the start.
     func restart(_ run: ManagedRun) {
         let (p, d, n, c) = (run.projectID, run.directory, run.name, run.command)
-        stop(run)
-        dismiss(run)
-        // Give the old server time to free its port.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
-            self.start(projectID: p, directory: d, name: n, command: c)
+        stop(run) { [weak self, weak run] ended in
+            guard let self else { return }
+            guard ended else {
+                run?.log.appendNote("[restart cancelled: the old run still runs]")
+                return
+            }
+            if let run { self.dismiss(run) }
+            // The tree gets the signal at once, but children can hold the port a moment longer.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                self.start(projectID: p, directory: d, name: n, command: c)
+            }
         }
     }
 
@@ -336,8 +458,25 @@ final class ScriptRunner {
         runs.removeAll { $0.id == run.id }
     }
 
+    /// On quit: runs the stop commands, waits up to 15 seconds for them in total, then signals every tree.
     func stopAll() {
-        for run in runs where run.isRunning { ProcessControl.killTree(run.pid, force: false, wait: false) }
+        let live = runs.filter(\.isRunning)
+        var stoppers: [Process] = []
+        for run in live {
+            guard let command = stopCommand(run) else { continue }
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: LoginEnvironment.shell)
+            process.arguments = ["-c", command]
+            process.currentDirectoryURL = URL(fileURLWithPath: run.directory)
+            process.environment = LoginEnvironment.shared
+            process.standardOutput = FileHandle.nullDevice
+            process.standardError = FileHandle.nullDevice
+            process.standardInput = FileHandle.nullDevice
+            if (try? process.run()) != nil { stoppers.append(process) }
+        }
+        let deadline = Date().addingTimeInterval(15)
+        while stoppers.contains(where: \.isRunning) && Date() < deadline { Thread.sleep(forTimeInterval: 0.05) }
+        for run in live { ProcessControl.killTree(run.pid, force: false, wait: false) }
     }
 }
 
