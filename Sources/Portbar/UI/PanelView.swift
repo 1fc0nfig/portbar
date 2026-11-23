@@ -54,6 +54,8 @@ struct PanelView: View {
             }
         }
         .padding(.bottom, 8)
+        // A row wider than the panel overflows to the right and never pushes the other rows off the left edge.
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func header(_ projects: [ProjectDisplay]) -> some View {
@@ -468,16 +470,16 @@ struct ScriptsMenu: View {
     }
 }
 
-/// Corner grip: drag to set the panel width and maximum height. Double-click to reset.
+/// Corner grip: drag to set the panel width. Double-click to reset. The height follows the content.
 struct ResizeGrip: View {
     let settings: SettingsStore
-    @State private var start: (width: Double, height: Double)?
+    /// Width and mouse x when the drag started. Screen coordinates, because the window moves while it resizes.
+    @State private var start: (width: Double, mouseX: Double)?
     @State private var hovering = false
 
     var body: some View {
-        Image(systemName: "arrow.up.left.and.arrow.down.right")
+        Image(systemName: "arrow.left.and.right")
             .font(.system(size: 8, weight: .semibold))
-            .rotationEffect(.degrees(90))
             .foregroundStyle(hovering || start != nil ? .secondary : .quaternary)
             .frame(width: 16, height: 16)
             .contentShape(Rectangle())
@@ -485,32 +487,27 @@ struct ResizeGrip: View {
                 hovering = inside
                 if inside {
                     if #available(macOS 15.0, *) {
-                        NSCursor.frameResize(position: .bottomRight, directions: .all).push()
+                        NSCursor.frameResize(position: .right, directions: .all).push()
                     } else {
-                        NSCursor.crosshair.push()
+                        NSCursor.resizeLeftRight.push()
                     }
                 } else {
                     NSCursor.pop()
                 }
             }
             .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                    .onChanged { value in
-                        let s = start ?? (settings.value.panelWidth, settings.value.panelMaxHeight)
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in
+                        let x = NSEvent.mouseLocation.x
+                        let s = start ?? (settings.value.panelWidth, x)
                         if start == nil { start = s }
-                        let w = (s.width + value.translation.width).clamped(to: Settings.widthRange)
-                        let h = (s.height + value.translation.height).clamped(to: Settings.heightRange)
                         // Round to whole points, so the panel does not redraw for sub-point moves.
-                        settings.value.panelWidth = w.rounded()
-                        settings.value.panelMaxHeight = h.rounded()
+                        settings.value.panelWidth = (s.width + x - s.mouseX).clamped(to: Settings.widthRange).rounded()
                     }
                     .onEnded { _ in start = nil }
             )
-            .onTapGesture(count: 2) {
-                settings.value.panelWidth = Settings.defaultWidth
-                settings.value.panelMaxHeight = Settings.defaultMaxHeight
-            }
-            .help("Drag to resize. Double-click to reset.")
+            .onTapGesture(count: 2) { settings.value.panelWidth = Settings.defaultWidth }
+            .help("Drag to change the width. Double-click to reset.")
             .padding(2)
     }
 }

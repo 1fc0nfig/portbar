@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 /// `portbar --dump` prints what the panel would show. `--render out.png` saves the panel as an image.
+/// `--render` also takes `--width <pt>`, `--expand`, `--compact`, and `--pin <path>`.
 enum DebugTools {
     static func dump() {
         let graph = ServiceGraph()
@@ -136,6 +137,10 @@ enum DebugTools {
             model.settings.add(args[i + 1])
         }
         model.settings.value.density = args.contains("--compact") ? .compact : .regular
+        // `--width <pt>` renders at a panel width, to check that rows fit.
+        if let i = args.firstIndex(of: "--width"), i + 1 < args.count, let w = Double(args[i + 1]) {
+            model.settings.value.panelWidth = w
+        }
         // Wait for the first background scan.
         let deadline = Date().addingTimeInterval(4)
         while model.snapshot.projects.isEmpty && Date() < deadline {

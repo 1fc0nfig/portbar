@@ -152,6 +152,9 @@ struct Settings: Codable, Equatable {
     static let defaultMaxHeight: Double = 600
     static let widthRange: ClosedRange<Double> = 360...760
     static let heightRange: ClosedRange<Double> = 280...1000
+    /// Narrower panels drop these columns, so a row never gets wider than the panel.
+    static let sparklineMinWidth: Double = 440
+    static let memoryMinWidth: Double = 400
 
     /// Common code folders that exist on this Mac.
     static var defaultRoots: [String] {
