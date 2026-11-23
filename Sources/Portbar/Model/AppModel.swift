@@ -299,8 +299,9 @@ final class AppModel {
 
     private func apply(_ fresh: Snapshot) {
         let now = Date()
-        // A service stays hidden while its run's stop command runs, which can take longer than 10 seconds.
-        let busy = Set(runner.runs.filter(\.stopping).map(\.id))
+        // A service stays hidden until its run ends: the stop command can take longer than 10 seconds,
+        // and the signals come after it.
+        let busy = Set(runner.runs.filter(\.isRunning).map(\.id))
         stopping = stopping.filter { id, date in
             now.timeIntervalSince(date) < 10 || stoppingRuns[id].map(busy.contains) == true
         }

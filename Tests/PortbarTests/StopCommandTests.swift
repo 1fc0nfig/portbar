@@ -133,6 +133,43 @@ final class StopCommandTests: XCTestCase {
         XCTAssertTrue(run.log.text.contains("[restart cancelled: the old run still runs]"))
     }
 
+    /// Force Kill while the stop command hangs ends both, and counts as a stop, not a failure.
+    func testForceKillDuringStopCommand() async throws {
+        runner.stopCommand = { _ in "sleep 30" }
+        let run = startEscaping()
+        _ = try await escaped()
+        var results: [Bool] = []
+        runner.stop(run) { results.append($0) }
+        XCTAssertTrue(run.stopping)
+        runner.stop(run, force: true)
+        await waitUntil { !run.isRunning && !run.stopping }
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertFalse(run.isRunning)
+        XCTAssertNil(run.stopFailure)
+        XCTAssertTrue(run.stoppedByUser)
+        XCTAssertFalse(run.failed)
+        XCTAssertEqual(results, [true])
+        XCTAssertTrue(run.log.text.contains("[stop command ended by Force Kill]"), run.log.text)
+    }
+
+    /// The script exits while its stop command still runs (`up` ends during `down`): Restart waits for both.
+    func testRestartWaitsWhenScriptEndsDuringStopCommand() async throws {
+        runner.stopCommand = { _ in "kill $(cat escaped.pid); sleep 1.5; touch down.done" }
+        let command = "sh -c 'sleep 300 >/dev/null 2>&1 & echo $! > escaped.pid'; while kill -0 $(cat escaped.pid) 2>/dev/null; do sleep 0.1; done"
+        let run = runner.start(projectID: dir.path, directory: dir.path, name: "up", command: command)
+        started.append(run)
+        _ = try await escaped()
+        runner.restart(run)
+        await waitUntil { !run.isRunning }
+        XCTAssertFalse(run.isRunning)
+        XCTAssertTrue(run.stopping, "the stop command still runs after the script ended")
+        XCTAssertNil(runner.runs.first { $0.id != run.id }, "no new run before the stop command ends")
+        await waitUntil { self.runner.runs.contains { $0.id != run.id } }
+        let next = try XCTUnwrap(runner.runs.first { $0.id != run.id })
+        started.append(next)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: dir.appendingPathComponent("down.done").path))
+    }
+
     func testStopCommandTrimsAndDecodes() throws {
         XCTAssertNil(CustomScript(name: "a", command: "x", stopCommand: "  ").stop)
         XCTAssertEqual(CustomScript(name: "a", command: "x", stopCommand: " sail stop ").stop, "sail stop")

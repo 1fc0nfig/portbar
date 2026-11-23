@@ -65,6 +65,10 @@ final class ManagedRun: Identifiable {
     fileprivate(set) var stopping = false
     /// Why the last stop command did not stop the script. Cleared by the next stop.
     fileprivate(set) var stopFailure: String?
+    /// Stop signalled a docker CLI with no stop command, so container processes may still run.
+    fileprivate(set) var reachedDocker = false
+    /// Force Kill ran while a stop command ran. Its end is then no failure.
+    fileprivate var forced = false
     @ObservationIgnored fileprivate var tail: LogTail?
     @ObservationIgnored fileprivate var exitWatch: DispatchSourceProcess?
 
@@ -208,6 +212,8 @@ final class ScriptRunner {
     @ObservationIgnored private var stopWaiters: [UUID: [(Bool) -> Void]] = [:]
     /// The stop command of a run, read at stop time, so an edit in Settings applies to runs that already run.
     @ObservationIgnored var stopCommand: (ManagedRun) -> String? = { _ in nil }
+    static let dockerHint = "Processes inside Docker can keep running after Stop. "
+        + "Add a stop command to this script in Project Settings → Scripts."
     /// How long a stop command may run before portbar ends it and reports a failure.
     static let stopTimeout: TimeInterval = 60
 
@@ -326,7 +332,8 @@ final class ScriptRunner {
         setExit()
         run.ended = Date()
         run.log.appendNote(run.exit.map { "[\($0.long)]" } ?? "[ended]")
-        resolveWaiters(run, true)
+        // Restart waits for the stop command too, so `docker compose down` finishes before the next `up`.
+        if stopProcesses[run.id] == nil { resolveWaiters(run, true) }
     }
 
     private func resolveWaiters(_ run: ManagedRun, _ ended: Bool) {
@@ -345,13 +352,16 @@ final class ScriptRunner {
             return
         }
         // Force Kill ends a stop command that hangs, too.
-        if let stopper = stopProcesses[run.id] { ProcessControl.killTree(stopper.processIdentifier, force: true) }
+        if let stopper = stopProcesses[run.id] {
+            run.forced = true
+            ProcessControl.killTree(stopper.processIdentifier, force: true)
+        }
         run.stoppedByUser = true
         let tree = [run.pid] + ProcessControl.descendants(of: run.pid)
         ProcessControl.killTree(run.pid, force: force)
         if tree.contains(where: { ProcessControl.isDockerClient($0) }) {
-            run.log.appendNote("Processes inside Docker can keep running after Stop. "
-                               + "Add a stop command to this script in Project Settings → Scripts.")
+            run.reachedDocker = true
+            run.log.appendNote(Self.dockerHint)
         }
     }
 
@@ -376,22 +386,26 @@ final class ScriptRunner {
         process.standardError = output
         process.standardInput = FileHandle.nullDevice
 
+        let id = run.id
         process.terminationHandler = { [weak self, weak run] p in
             let status = ExitStatus(code: p.terminationStatus,
                                     signal: p.terminationReason == .uncaughtSignal ? p.terminationStatus : nil)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
-                    guard let self, let run else { return }
-                    self.stopEnded(run, status: status)
+                    guard let self else { return }
+                    // Clean up by id, also when the run was dismissed in the meantime.
+                    self.stopProcesses[id] = nil
+                    let timedOut = self.timedOut.remove(id) != nil
+                    if let run { self.stopEnded(run, status: status, timedOut: timedOut) }
                 }
             }
         }
         do {
             try process.run()
             stopProcesses[run.id] = process
-            let (id, pid) = (run.id, process.processIdentifier)
+            let pid = process.processIdentifier
             DispatchQueue.main.asyncAfter(deadline: .now() + Self.stopTimeout) { [weak self] in
-                guard let self, self.stopProcesses[id] === process else { return }
+                guard let self, self.stopProcesses[id] === process, process.isRunning else { return }
                 self.timedOut.insert(id)
                 ProcessControl.killTree(pid, force: false)
             }
@@ -405,17 +419,22 @@ final class ScriptRunner {
         if fd >= 0 { try? output.close() }
     }
 
-    private func stopEnded(_ run: ManagedRun, status: ExitStatus) {
-        stopProcesses[run.id] = nil
-        let timedOut = self.timedOut.remove(run.id) != nil
+    private func stopEnded(_ run: ManagedRun, status: ExitStatus, timedOut: Bool) {
         run.stopping = false
         run.tail?.drain(into: run.log)
         run.log.flush()
+        if run.forced {
+            run.forced = false
+            run.log.appendNote("[stop command ended by Force Kill]")
+            if !run.isRunning { run.tail?.close(); run.tail = nil; resolveWaiters(run, true) }
+            return
+        }
         if !run.isRunning {
-            // The script ended while the stop command ran.
+            // The script ended while the stop command ran. Waiters held on until now.
             run.tail?.close()
             run.tail = nil
             run.log.appendNote("[stop command: \(status.long)]")
+            resolveWaiters(run, true)
             return
         }
         if status.isSuccess && !timedOut {
@@ -441,10 +460,13 @@ final class ScriptRunner {
                 run?.log.appendNote("[restart cancelled: the old run still runs]")
                 return
             }
+            let warn = run?.reachedDocker ?? false
             if let run { self.dismiss(run) }
             // The tree gets the signal at once, but children can hold the port a moment longer.
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                self.start(projectID: p, directory: d, name: n, command: c)
+                let next = self.start(projectID: p, directory: d, name: n, command: c)
+                // The old log is gone, so the new one keeps the warning.
+                if warn { next.log.appendNote(Self.dockerHint) }
             }
         }
     }
