@@ -20,17 +20,24 @@ for arg in "$@"; do
   esac
 done
 
+# Stamp the real SDK version into the binary. SwiftPM stamps the deployment target
+# (14.0) as the SDK, and macOS then runs the app in compatibility mode: no Liquid
+# Glass, flat square panel. The SDK stamp is what turns the macOS 26 look on.
+SDK_VERSION="$(xcrun --sdk macosx --show-sdk-version)"
+MIN_MACOS="$(plutil -extract LSMinimumSystemVersion raw Resources/Info.plist)"
+LINK=(-Xlinker -platform_version -Xlinker macos -Xlinker "$MIN_MACOS" -Xlinker "$SDK_VERSION")
+
 if $UNIVERSAL; then
   # One build per arch, then lipo. A single multi-arch build (--arch arm64
   # --arch x86_64) fails with "duplicate output file" on the CI runner.
-  swift build -c release --arch arm64
-  swift build -c release --arch x86_64
+  swift build -c release --arch arm64 "${LINK[@]}"
+  swift build -c release --arch x86_64 "${LINK[@]}"
   BIN=.build/portbar-universal
   lipo -create -output "$BIN" \
     .build/arm64-apple-macosx/release/portbar \
     .build/x86_64-apple-macosx/release/portbar
 else
-  swift build -c release
+  swift build -c release "${LINK[@]}"
   BIN=.build/release/portbar
 fi
 
