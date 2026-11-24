@@ -36,6 +36,8 @@ struct PanelView: View {
         }
         // Keep the vibrancy, but stop bright windows behind the panel from showing through.
         .background(Color(nsColor: .windowBackgroundColor).opacity(0.55))
+        .fixedSize(horizontal: false, vertical: true)
+        .fitsWindow()
         .onAppear { model.openSettingsAction = openSettings }
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
             model.isPanelOpen = true
